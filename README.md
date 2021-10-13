@@ -1,3 +1,3 @@
 # AuthSessionRedis
 
-Реализация сеансов на основе Redis
+Authentication sessions implemented on Redis.
