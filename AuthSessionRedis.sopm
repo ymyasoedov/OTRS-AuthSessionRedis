@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<otrs_package version="1.0">
+    <Name>AuthSessionRedis</Name>
+    <Version>6.0.2</Version>
+    <Framework Minimum="6.0.0">6.0.x</Framework>
+    <Vendor>Personal package</Vendor>
+    <URL>https://otrs.com/</URL>
+    <License>GNU GENERAL PUBLIC LICENSE Version 3, 29 June 2007</License>
+    <Description Lang="en">Implementation of authentication sessions on Redis</Description>
+    <Description Lang="ru">Реализация аутентификационных сеансов на Redis</Description>
+    <Filelist>
+        <File Permission="660" Location="Kernel/Config/Files/XML/AuthSessionRedis.xml" />
+        <File Permission="660" Location="Kernel/System/AuthSession/Redis.pm" />
+    </Filelist>
+</otrs_package>
