@@ -29,7 +29,7 @@ sub new {
     bless( $Self, $Type );
 
     # Store Redis config
-    my $ConfigObject   = $Kernel::OM->Get('Kernel::Config');
+    my $ConfigObject = $Kernel::OM->Get('Kernel::Config');
     $Self->{Config} = {
         Address        => $ConfigObject->Get('AuthSession::Redis')->{Server}         || '127.0.0.1:6379',
         DatabaseNumber => $ConfigObject->Get('AuthSession::Redis')->{DatabaseNumber} || 1,
@@ -65,9 +65,9 @@ sub DESTROY {
         );
 
         # update session data in redis and set the same TTL
-        my $TTL = $Self->{Redis}->get( "OTRSSession-" . $SessionID );
+        my $TTL = $Self->{Redis}->ttl( "OTRSSession-" . $SessionID );
         next SESSIONID if !$TTL;
-        $Self->{Redis}->set( 'OTRSSession-' . $SessionID, $DataContent, 'EX', $TTL );
+        $Self->{Redis}->setex( 'OTRSSession-' . $SessionID, $TTL, $DataContent );
 
     }
 
@@ -224,10 +224,11 @@ sub CreateSessionID {
     my $RemoteAddr      = $ENV{REMOTE_ADDR}     || 'none';
     my $RemoteUserAgent = $ENV{HTTP_USER_AGENT} || 'none';
 
-    my $MainObject = $Kernel::OM->Get('Kernel::System::Main');
+    my $MainObject   = $Kernel::OM->Get('Kernel::System::Main');
+    my $ConfigObject = $Kernel::OM->Get('Kernel::Config');
 
     # create session id
-    my $SessionID = $Self->{SystemID} . $MainObject->GenerateRandomString(
+    my $SessionID = $ConfigObject->Get('SystemID') . $MainObject->GenerateRandomString(
         Length => 32,
     );
 
@@ -245,7 +246,6 @@ sub CreateSessionID {
         $Data{$Key} = $Param{$Key};
     }
 
-    my $ConfigObject       = $Kernel::OM->Get('Kernel::Config');
     my $MaxSessionIdleTime = $ConfigObject->Get('SessionMaxIdleTime');
     my $MaxSessionTime     = $ConfigObject->Get('SessionMaxTime');
 
@@ -258,7 +258,12 @@ sub CreateSessionID {
     my $DataContent = $Kernel::OM->Get('Kernel::System::Storable')->Serialize( Data => \%Data );
 
     # store session in redis
-    $Self->{Redis}->set( 'OTRSSession-' . $SessionID, $DataContent );#, 'EX', $MaxSessionIdleTime );
+    if ($MaxSessionIdleTime) {
+        $Self->{Redis}->setex( 'OTRSSession-' . $SessionID, $MaxSessionIdleTime, $DataContent );
+    }
+    else {
+        $Self->{Redis}->set( 'OTRSSession-' . $SessionID, $DataContent );
+    }
 
     return $SessionID;
 }
@@ -313,7 +318,8 @@ sub GetAllSessionIDs {
     # Connect to Redis if not connected
     return if !$Self->{Redis} && !$Self->_Connect();
 
-    return map { s/^OTRSSession\-//; $_ } $Self->{Redis}->keys('OTRSSession-*');
+    return map { ( split( 'OTRSSession\-', $_ ) )[-1] } $Self->{Redis}->keys('OTRSSession-*');
+
 }
 
 sub GetActiveSessions {
@@ -322,25 +328,44 @@ sub GetActiveSessions {
     # get all available sessions
     my @SessionIDs = $Self->GetAllSessionIDs();
 
-    my %Result;
+    my $ActiveSessionCount = 0;
+    my %ActiveSessionPerUserCount;
+
+    # Sessions IDLE contolled by Redis TTL mechanism,
+    # so no need in additional checks
 
     SESSIONID:
     for my $SessionID (@SessionIDs) {
 
+        next SESSIONID if !$SessionID;
+
         # get session data
         my %Session = $Self->GetSessionIDData( SessionID => $SessionID );
 
-        # skip invalid sessions and sessions another user type
         next SESSIONID if !%Session;
-        next SESSIONID if $Session{UserType} ne $Param{UserType};
 
-        # count sessions
-        $Result{Total}++;
-        $Result{PerUser}->{ $Session{UserLogin} }++;
+        # Don't count session from source 'GenericInterface'
+        my $SessionSource = $Session{SessionSource} || '';
+
+        next SESSIONID if $SessionSource eq 'GenericInterface';
+
+        # get needed data
+        my $UserType  = $Session{UserType} || '';
+        my $UserLogin = $Session{UserLogin};
+
+        next SESSIONID if $UserType ne $Param{UserType};
+
+        $ActiveSessionCount++;
+
+        $ActiveSessionPerUserCount{$UserLogin} || 0;
+        $ActiveSessionPerUserCount{$UserLogin}++;
 
     }
 
-    return %Result;
+    return (
+        Total   => $ActiveSessionCount,
+        PerUser => \%ActiveSessionPerUserCount,
+    );
 }
 
 =head2 GetExpiredSessionIDs()
@@ -363,11 +388,12 @@ sub GetExpiredSessionIDs {
     SESSIONID:
     for my $SessionID (@SessionIDs) {
         my %Session = $Self->GetSessionIDData( SessionID => $SessionID );
+
         next SESSIONID if !%Session;
 
         my $UserSessionStart = $Session{UserSessionStart} || $TimeNow;
 
-        if ( $UserSessionStart + $MaxSessionTime > $TimeNow ) {
+        if ( $TimeNow - $UserSessionStart > $MaxSessionTime ) {
             push @ExpiredSessions, $SessionID;
         }
     }
@@ -393,7 +419,7 @@ sub _Connect {
     return if $Self->{Redis};
 
     my $MainObject = $Kernel::OM->Get('Kernel::System::Main');
-    my $Loaded = $MainObject->Require(
+    my $Loaded     = $MainObject->Require(
         $Self->{Config}{RedisFast} ? 'Redis::Fast' : 'Redis',
     );
     return if !$Loaded;
@@ -407,7 +433,8 @@ sub _Connect {
         }
         if (
             $Self->{Config}{DatabaseNumber}
-            && !$Self->{Redis}->select( $Self->{Config}{DatabaseNumber} ) )
+            && !$Self->{Redis}->select( $Self->{Config}{DatabaseNumber} )
+            )
         {
             die "Can't select database '$Self->{Config}{DatabaseNumber}'!";
         }
